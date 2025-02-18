@@ -13,12 +13,14 @@ type Producer interface {
 type producer struct {
 	client  client.Producer
 	encoder codec.Encoder
+	logger  Logger
 }
 
 func NewProducer(client client.Producer) Producer {
 	return &producer{
 		client:  client,
 		encoder: codec.JSONEncoder,
+		logger:  DefaultLogger{},
 	}
 }
 
@@ -31,5 +33,6 @@ func (p *producer) Produce(ctx context.Context, topic string, data any) error {
 	if err != nil {
 		return err
 	}
+	p.logger.Info(ctx, "Produce to topic %s, data: %s", topic, msg)
 	return p.client.Produce(ctx, topic, msg)
 }

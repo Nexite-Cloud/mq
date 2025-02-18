@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"github.com/Nexite-Cloud/mq"
 	"github.com/Nexite-Cloud/mq/client"
+	"github.com/Nexite-Cloud/mq/codec"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"sync"
 )
 
 type Data struct {
@@ -14,7 +16,7 @@ type Data struct {
 
 func main() {
 	ctx := context.Background()
-	topic := "abc"
+	topic := "tp"
 	group := "test-group"
 	// pub
 	kafkaClient, err := kgo.NewClient(
@@ -31,10 +33,14 @@ func main() {
 		panic(err)
 	}
 	pub := mq.NewProducer(client.NewKafka(kafkaClient))
+	pub.SetEncoder(codec.GOBEncoder)
 
+	wg := sync.WaitGroup{}
 	con := mq.NewConsumer[Data](client.NewKafka(kafkaClient))
 	con.SetTotalWorker(10)
+	con.SetDecoder(codec.GOBDecoder[Data])
 	con.AddHandler(func(data Data) error {
+		defer wg.Done()
 		fmt.Println("received data:", data)
 		return nil
 	})
@@ -43,11 +49,11 @@ func main() {
 	}
 
 	for i := 0; i < 1000; i++ {
-		go func() {
-			if err := pub.Produce(ctx, topic, Data{i}); err != nil {
-				fmt.Println(err)
-			}
-		}()
+		wg.Add(1)
+		if err := pub.Produce(ctx, topic, Data{i}); err != nil {
+			fmt.Println(err)
+		}
 	}
-	con.Wait()
+	wg.Wait()
+	con.Close()
 }

@@ -43,6 +43,7 @@ func (k *Kafka) Next(ctx context.Context) ([]byte, error) {
 		return nil, errors.New("no more message")
 	}
 	record := k.iter.Next()
+
 	return record.Value, nil
 }
 

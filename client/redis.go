@@ -7,8 +7,21 @@ import (
 
 type Redis struct {
 	client *redis.Client
-	pubsub *redis.PubSub
+	sub    *redis.PubSub
 	c      <-chan *redis.Message
+}
+
+func NewRedis(client *redis.Client) *Redis {
+	return &Redis{
+		client: client,
+		c:      nil,
+	}
+}
+
+func (r *Redis) ConsumeChannel(ctx context.Context, channel string) *Redis {
+	r.sub = r.client.Subscribe(ctx, channel)
+	r.c = r.sub.Channel()
+	return r
 }
 
 func (r *Redis) Next(ctx context.Context) ([]byte, error) {
@@ -17,7 +30,10 @@ func (r *Redis) Next(ctx context.Context) ([]byte, error) {
 }
 
 func (r *Redis) Close() error {
-	return r.pubsub.Close()
+	if r.sub != nil {
+		r.sub.Close()
+	}
+	return nil
 }
 
 func (r *Redis) Produce(ctx context.Context, topic string, data []byte) error {
