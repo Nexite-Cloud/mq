@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/Nexite-Cloud/mq/core/kafka"
+	"github.com/Nexite-Cloud/mq"
+	"github.com/Nexite-Cloud/mq/client"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -16,7 +17,7 @@ func main() {
 	topic := "abc"
 	group := "test-group"
 	// pub
-	pubClient, err := kgo.NewClient(
+	kafkaClient, err := kgo.NewClient(
 		kgo.SeedBrokers("localhost:9094"),
 		kgo.AllowAutoTopicCreation(),
 		kgo.ConsumerGroup(group),
@@ -26,23 +27,27 @@ func main() {
 		panic(err)
 	}
 
-	if err := pubClient.Ping(ctx); err != nil {
+	if err := kafkaClient.Ping(ctx); err != nil {
 		panic(err)
 	}
-	pub := kafka.NewProducer(pubClient)
-	sub := kafka.NewConsumer[Data](pubClient).WithHandler(func(data Data) error {
+	pub := mq.NewProducer(client.NewKafka(kafkaClient))
+
+	con := mq.NewConsumer[Data](client.NewKafka(kafkaClient))
+	con.SetTotalWorker(10)
+	con.AddHandler(func(data Data) error {
 		fmt.Println("received data:", data)
 		return nil
-	}).WithTotalWorker(10)
-
-	sub.Start()
-
-	for i := 0; i < 1000; i++ {
-		if err := pub.ProduceSync(ctx, topic, Data{i}); err != nil {
-			fmt.Println(err)
-		}
+	})
+	if err := con.Start(ctx); err != nil {
+		panic(err)
 	}
 
-	sub.Wait()
-
+	for i := 0; i < 1000; i++ {
+		go func() {
+			if err := pub.Produce(ctx, topic, Data{i}); err != nil {
+				fmt.Println(err)
+			}
+		}()
+	}
+	con.Wait()
 }
