@@ -22,7 +22,7 @@ func NewProducer(client client.Producer) Producer {
 	return &producer{
 		client:  client,
 		encoder: codec.JSONEncoder,
-		logger:  slogLogger{},
+		logger:  NewSlogLogger(nil),
 	}
 }
 

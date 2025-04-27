@@ -50,7 +50,7 @@ func NewConsumer[T any](client client.Consumer) Consumer[T] {
 		close:     make(chan struct{}),
 		items:     make(chan []byte),
 		numWorker: 1,
-		logger:    slogLogger{},
+		logger:    NewSlogLogger(nil),
 		retry:     make(chan *retry[T], retryQueueSize),
 	}
 	return c
