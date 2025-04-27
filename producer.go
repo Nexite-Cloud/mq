@@ -2,6 +2,7 @@ package mq
 
 import (
 	"context"
+
 	"github.com/Nexite-Cloud/mq/client"
 	"github.com/Nexite-Cloud/mq/codec"
 )
@@ -9,6 +10,7 @@ import (
 type Producer interface {
 	Produce(ctx context.Context, topic string, data any) error
 	SetEncoder(encoder codec.Encoder)
+	SetLogger(logger Logger)
 }
 type producer struct {
 	client  client.Producer
@@ -20,8 +22,12 @@ func NewProducer(client client.Producer) Producer {
 	return &producer{
 		client:  client,
 		encoder: codec.JSONEncoder,
-		logger:  DefaultLogger{},
+		logger:  slogLogger{},
 	}
+}
+
+func (p *producer) SetLogger(logger Logger) {
+	p.logger = logger
 }
 
 func (p *producer) SetEncoder(encoder codec.Encoder) {
@@ -33,6 +39,6 @@ func (p *producer) Produce(ctx context.Context, topic string, data any) error {
 	if err != nil {
 		return err
 	}
-	p.logger.Info(ctx, "Produce to topic %s, data: %s", topic, msg)
+	p.logger.Info(ctx, "produce message", "topic", topic, "data", data, "msg", string(msg))
 	return p.client.Produce(ctx, topic, msg)
 }
