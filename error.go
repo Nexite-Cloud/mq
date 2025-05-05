@@ -2,7 +2,7 @@ package mq
 
 import "fmt"
 
-type retry[T any] struct {
+type Retry[T any] struct {
 	Data       T
 	MaxRetry   int
 	RetryCount int
