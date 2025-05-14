@@ -2,89 +2,220 @@ package mq
 
 import (
 	"context"
+	"errors"
+	"sync"
+
 	"github.com/Nexite-Cloud/mq/client"
 	"github.com/Nexite-Cloud/mq/codec"
 )
+
+var mu sync.Mutex
+var retryQueueSize int = 1000
+
+func SetRetryQueueSize(size int) {
+	mu.Lock()
+	defer mu.Unlock()
+	retryQueueSize = size
+}
 
 type Consumer[T any] interface {
 	Start(ctx context.Context) error
 	Wait()
 	AddHandler(handler ...func(T) error)
-	SetDecoder(decoder codec.Decoder[T])
+	SetCodec(codec codec.Codec[T])
 	SetTotalWorker(num int)
+	SetLogger(logger Logger)
+	SetRetryProducer(producer Producer[Retry[T]], topic string)
 	Close() error
 }
 
+type consumerItem struct {
+	Topic string
+	Data  []byte
+}
+
 type consumer[T any] struct {
-	client    client.Consumer
-	decoder   codec.Decoder[T]
-	handler   []func(T) error
-	close     chan struct{}
-	items     chan []byte
-	numWorker int
-	logger    Logger
+	wg            sync.WaitGroup
+	client        client.Consumer
+	codec         codec.Codec[T]
+	handler       []func(T) error
+	close         chan struct{}
+	items         chan *consumerItem
+	numWorker     int
+	logger        Logger
+	retry         chan *Retry[T]
+	retryProducer Producer[Retry[T]]
+	retryTopic    string
 }
 
 type ConsumerOption[T any] func(*consumer[T])
 
 func NewConsumer[T any](client client.Consumer) Consumer[T] {
 	c := &consumer[T]{
+		wg:        sync.WaitGroup{},
 		client:    client,
-		decoder:   codec.JSONDecoder[T],
+		codec:     codec.JSON[T](),
 		close:     make(chan struct{}),
-		items:     make(chan []byte),
+		items:     make(chan *consumerItem),
 		numWorker: 1,
-		logger:    DefaultLogger{},
+		logger:    NewSlogLogger(nil),
+		retry:     make(chan *Retry[T], retryQueueSize),
 	}
 	return c
 }
 
-func (c *consumer[T]) SetDecoder(decoder codec.Decoder[T]) {
-	c.decoder = decoder
+func (c *consumer[T]) SetLogger(logger Logger) {
+	c.logger = logger
+}
+
+func (c *consumer[T]) SetCodec(cd codec.Codec[T]) {
+	c.codec = cd
 }
 
 func (c *consumer[T]) SetTotalWorker(num int) {
 	c.numWorker = num
 }
 
+func (c *consumer[T]) SetRetryProducer(producer Producer[Retry[T]], topic string) {
+	close(c.retry)
+	producer.SetLogger(c.logger)
+	c.retryProducer = producer
+	c.retryTopic = topic
+}
+
+func (c *consumer[T]) handleItem(ctx context.Context, workerID int, data T) {
+	defer c.wg.Done()
+	for _, h := range c.handler {
+		if err := h(data); err != nil {
+			c.logger.Error(ctx, "worker handle error", "worker_id", workerID, "error", err, "data", data)
+			// check if drop
+			var errDrop *errTypeDrop
+			if errors.As(err, &errDrop) {
+				break
+			}
+			// check if error is retryable
+			var errRetry *errTypeRetry
+			if ok := errors.As(err, &errRetry); ok {
+				if errRetry.retryTime == 0 {
+					continue
+				}
+				retryItem := Retry[T]{
+					Data:       data,
+					MaxRetry:   errRetry.retryTime,
+					RetryCount: 1,
+				}
+				if c.retryProducer == nil {
+					c.wg.Add(1)
+					c.retry <- &retryItem
+				} else {
+					if err := c.retryProducer.Produce(ctx, c.retryTopic, retryItem); err != nil {
+						c.logger.Error(ctx, "worker retry produce error", "worker_id", workerID, "error", err, "topic", c.retryTopic, "data", data)
+					}
+				}
+			}
+			continue
+		}
+	}
+}
+
+func (c *consumer[T]) handleRetry(ctx context.Context, workerID int, retryItem *Retry[T]) {
+	defer c.wg.Done()
+	retryItem.RetryCount++
+	data := retryItem.Data
+	for _, h := range c.handler {
+		if err := h(data); err != nil {
+			c.logger.Error(ctx, "worker handle retry error", "worker_id", workerID, "error", err, "data", data)
+			// check if drop
+			var errDrop *errTypeDrop
+			if errors.As(err, &errDrop) {
+				break
+			}
+			if retryItem.RetryCount > retryItem.MaxRetry {
+				c.logger.Error(ctx, "retry max reached", "worker_id", workerID, "data", retryItem.Data, "max_retry", retryItem.MaxRetry)
+				continue
+			}
+			nextRetryItem := Retry[T]{
+				Data:       data,
+				MaxRetry:   retryItem.MaxRetry,
+				RetryCount: retryItem.RetryCount,
+			}
+			if c.retryProducer == nil {
+				c.wg.Add(1)
+				c.retry <- &nextRetryItem
+			} else {
+				if err := c.retryProducer.Produce(ctx, c.retryTopic, nextRetryItem); err != nil {
+					c.logger.Error(ctx, "worker retry produce error", "worker_id", workerID, "error", err, "topic", c.retryTopic, "data", data)
+				}
+			}
+		}
+	}
+}
+
 func (c *consumer[T]) Start(ctx context.Context) error {
 	go func() {
 		for {
-			item, err := c.client.Next(ctx)
+			topic, item, err := c.client.Next(ctx)
+			c.logger.Info(ctx, "consume message", "topic", topic, "item", string(item))
 			if err != nil {
 				continue
 			}
-			c.items <- item
+			c.wg.Add(1)
+			c.items <- &consumerItem{
+				Topic: topic,
+				Data:  item,
+			}
 		}
 	}()
 	for i := 0; i < c.numWorker; i++ {
 		workerID := i
 		go func() {
-			c.logger.Info(ctx, "Worker %d started", workerID)
-			for item := range c.items {
-				c.logger.Info(ctx, "Worker %d received: %s", workerID, item)
-				data, err := c.decoder(item)
-				if err != nil {
-					continue
-				}
-				for _, h := range c.handler {
-					if err := h(data); err != nil {
+			c.logger.Info(ctx, "worker started", "worker_id", workerID)
+			for {
+				select {
+				case item := <-c.items:
+					topic := item.Topic
+					rawData := item.Data
+					if topic == c.retryTopic {
+						data, err := c.retryProducer.Codec().Decode(rawData)
+						if err != nil {
+							c.logger.Error(ctx, "worker decode error", "worker_id", workerID, "error", err, "raw", string(rawData), "topic", topic)
+							continue
+						}
+						c.logger.Info(ctx, "worker retry", "worker_id", workerID, "data", data.Data, "max_retry", data.MaxRetry, "retry_count", data.RetryCount, "topic", topic)
+						c.handleRetry(ctx, workerID, &data)
 						continue
 					}
+					data, err := c.codec.Decode(rawData)
+					if err != nil {
+						c.logger.Error(ctx, "worker decode error", "worker_id", workerID, "error", err, "raw", string(rawData), "topic", topic)
+						continue
+					}
+					c.logger.Info(ctx, "worker received", "worker_id", workerID, "data", data, "topic", topic)
+					c.handleItem(ctx, workerID, data)
+				case retryItem, ok := <-c.retry:
+					if !ok {
+						continue
+					}
+					c.logger.Info(ctx, "worker retry", "worker_id", workerID, "data", retryItem.Data, "max_retry", retryItem.MaxRetry, "retry_count", retryItem.RetryCount)
+					c.handleRetry(ctx, workerID, retryItem)
 				}
 			}
+
 		}()
 	}
-
 	return nil
 }
 
 func (c *consumer[T]) Wait() {
+	c.wg.Wait()
 	<-c.close
 }
 
 func (c *consumer[T]) Close() error {
+	c.logger.Info(context.Background(), "waiting for workers to finish...")
+	c.wg.Wait()
 	c.close <- struct{}{}
+	c.logger.Info(context.Background(), "closing consumer...")
 	return c.client.Close()
 }
 

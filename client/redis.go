@@ -3,35 +3,60 @@ package client
 import (
 	"context"
 	"github.com/redis/go-redis/v9"
+	"sync"
 )
 
 type Redis struct {
+	mu     sync.RWMutex
 	client *redis.Client
-	sub    *redis.PubSub
-	c      <-chan *redis.Message
+	sub    map[string]*redis.PubSub
+	close  map[string]chan struct{}
+	c      chan *redis.Message
 }
 
 func NewRedis(client *redis.Client) *Redis {
 	return &Redis{
 		client: client,
-		c:      nil,
+		c:      make(chan *redis.Message),
+		sub:    make(map[string]*redis.PubSub),
+		close:  make(map[string]chan struct{}),
 	}
 }
 
 func (r *Redis) ConsumeChannel(ctx context.Context, channel string) *Redis {
-	r.sub = r.client.Subscribe(ctx, channel)
-	r.c = r.sub.Channel()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sub[channel] != nil {
+		return r
+	}
+	sub := r.client.Subscribe(ctx, channel)
+	r.sub[channel] = sub
+	r.close[channel] = make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case <-r.close[channel]:
+				return
+			case msg, ok := <-sub.Channel():
+				if !ok {
+					return
+				}
+				r.c <- msg
+			}
+		}
+	}()
 	return r
 }
 
-func (r *Redis) Next(ctx context.Context) ([]byte, error) {
+func (r *Redis) Next(ctx context.Context) (string, []byte, error) {
 	msg := <-r.c
-	return []byte(msg.Payload), nil
+	return msg.Channel, []byte(msg.Payload), nil
 }
 
 func (r *Redis) Close() error {
-	if r.sub != nil {
-		r.sub.Close()
+	for k, v := range r.sub {
+		v.Close()
+		r.close[k] <- struct{}{}
 	}
 	return nil
 }

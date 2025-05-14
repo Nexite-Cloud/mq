@@ -2,21 +2,29 @@ package mq
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 )
 
 type Logger interface {
-	Error(ctx context.Context, template string, args ...interface{})
-	Info(ctx context.Context, template string, args ...interface{})
+	Error(ctx context.Context, msg string, args ...any)
+	Info(ctx context.Context, msg string, args ...any)
 }
 
-type DefaultLogger struct {
+type slogLogger struct {
+	logger *slog.Logger
 }
 
-func (l DefaultLogger) Error(ctx context.Context, template string, args ...interface{}) {
-	fmt.Println("ERROR: ", fmt.Sprintf(template, args...))
+func NewSlogLogger(logger *slog.Logger) Logger {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return slogLogger{logger: logger}
 }
 
-func (l DefaultLogger) Info(ctx context.Context, template string, args ...interface{}) {
-	fmt.Println("INFO: ", fmt.Sprintf(template, args...))
+func (l slogLogger) Error(ctx context.Context, msg string, kv ...any) {
+	l.logger.ErrorContext(ctx, msg, kv...)
+}
+
+func (l slogLogger) Info(ctx context.Context, msg string, kv ...any) {
+	l.logger.InfoContext(ctx, msg, kv...)
 }

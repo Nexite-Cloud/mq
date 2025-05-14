@@ -5,7 +5,7 @@ import (
 )
 
 type Consumer interface {
-	Next(ctx context.Context) ([]byte, error)
+	Next(ctx context.Context) (topic string, rawData []byte, err error)
 	Close() error
 }
 
