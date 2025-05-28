@@ -22,6 +22,7 @@ type Consumer[T any] interface {
 	Start(ctx context.Context) error
 	Wait()
 	AddHandler(handler ...func(T) error)
+	AddContextHandler(handler ...func(context.Context, T) error)
 	SetCodec(codec codec.Codec[T])
 	SetTotalWorker(num int)
 	SetLogger(logger Logger)
@@ -38,7 +39,7 @@ type consumer[T any] struct {
 	wg            sync.WaitGroup
 	client        client.Consumer
 	codec         codec.Codec[T]
-	handler       []func(T) error
+	handler       []func(context.Context, T) error
 	close         chan struct{}
 	items         chan *consumerItem
 	numWorker     int
@@ -86,7 +87,7 @@ func (c *consumer[T]) SetRetryProducer(producer Producer[Retry[T]], topic string
 func (c *consumer[T]) handleItem(ctx context.Context, workerID int, data T) {
 	defer c.wg.Done()
 	for _, h := range c.handler {
-		if err := h(data); err != nil {
+		if err := h(ctx, data); err != nil {
 			c.logger.Error(ctx, "worker handle error", "worker_id", workerID, "error", err, "data", data)
 			// check if drop
 			var errDrop *errTypeDrop
@@ -123,7 +124,7 @@ func (c *consumer[T]) handleRetry(ctx context.Context, workerID int, retryItem *
 	retryItem.RetryCount++
 	data := retryItem.Data
 	for _, h := range c.handler {
-		if err := h(data); err != nil {
+		if err := h(ctx, data); err != nil {
 			c.logger.Error(ctx, "worker handle retry error", "worker_id", workerID, "error", err, "data", data)
 			// check if drop
 			var errDrop *errTypeDrop
@@ -220,5 +221,19 @@ func (c *consumer[T]) Close() error {
 }
 
 func (c *consumer[T]) AddHandler(handler ...func(T) error) {
+	ctxHandler := make([]func(context.Context, T) error, 0, len(handler))
+	for _, h := range handler {
+		if h == nil {
+			continue
+		}
+		hCopy := h
+		ctxHandler = append(ctxHandler, func(ctx context.Context, data T) error {
+			return hCopy(data)
+		})
+	}
+	c.AddContextHandler(ctxHandler...)
+}
+
+func (c *consumer[T]) AddContextHandler(handler ...func(context.Context, T) error) {
 	c.handler = append(c.handler, handler...)
 }
