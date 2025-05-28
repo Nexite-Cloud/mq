@@ -226,8 +226,9 @@ func (c *consumer[T]) AddHandler(handler ...func(T) error) {
 		if h == nil {
 			continue
 		}
+		hCopy := h
 		ctxHandler = append(ctxHandler, func(ctx context.Context, data T) error {
-			return h(data)
+			return hCopy(data)
 		})
 	}
 	c.AddContextHandler(ctxHandler...)
