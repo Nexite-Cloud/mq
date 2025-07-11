@@ -2,8 +2,9 @@ package client
 
 import (
 	"context"
-	"github.com/twmb/franz-go/pkg/kgo"
 	"sync"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 type Kafka struct {
