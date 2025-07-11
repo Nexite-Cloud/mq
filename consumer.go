@@ -3,8 +3,11 @@ package mq
 import (
 	"context"
 	"errors"
+	`os`
+	`os/signal`
 	"sync"
 	"sync/atomic"
+	`syscall`
 
 	"github.com/Nexite-Cloud/mq/client"
 	"github.com/Nexite-Cloud/mq/codec"
@@ -169,6 +172,7 @@ func (c *consumer[T]) startConsume(ctx context.Context) {
 	for {
 		// if worker stopped, stop consuming
 		if !c.running.Load() {
+			c.logger.Info(ctx, "consumer stopped")
 			return
 		}
 		topic, item, err := c.client.Next(ctx)
@@ -185,8 +189,24 @@ func (c *consumer[T]) startConsume(ctx context.Context) {
 }
 
 func (c *consumer[T]) Start(ctx context.Context) error {
+	c.running.Swap(true)
 	// start consuming process
 	go c.startConsume(ctx)
+
+	chanS := make(chan os.Signal, 1)
+	signal.Notify(chanS, syscall.SIGINT, syscall.SIGTERM)
+	cancel := func(signal os.Signal) {
+		c.logger.Info(ctx, "received signal, stopping consumer", "signal", signal)
+		// prevent consume new messages
+		if err := c.Close(); err != nil {
+			c.logger.Error(ctx, "close consumer error", "error", err)
+		}
+	}
+	go func() {
+		for sig := range chanS {
+			cancel(sig)
+		}
+	}()
 
 	// init worker pool
 	for i := 0; i < c.numWorker; i++ {
@@ -235,6 +255,10 @@ func (c *consumer[T]) Wait() {
 }
 
 func (c *consumer[T]) Close() error {
+	if !c.running.Load() {
+		return nil
+	}
+	c.running.Swap(false)
 	c.logger.Info(context.Background(), "waiting for workers to finish...")
 	c.wg.Wait()
 	c.close <- struct{}{}
