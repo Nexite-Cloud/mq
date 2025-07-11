@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Nexite-Cloud/mq/client"
 	"github.com/Nexite-Cloud/mq/codec"
@@ -36,31 +37,42 @@ type consumerItem struct {
 }
 
 type consumer[T any] struct {
-	wg            sync.WaitGroup
-	client        client.Consumer
-	codec         codec.Codec[T]
-	handler       []func(context.Context, T) error
-	close         chan struct{}
-	items         chan *consumerItem
-	numWorker     int
-	logger        Logger
-	retry         chan *Retry[T]
-	retryProducer Producer[Retry[T]]
+	// concurrent management
+	numWorker int
+	wg        sync.WaitGroup
+	items     chan *consumerItem
+	retry     chan Retry[T]
+	close     chan struct{}
+	running   atomic.Bool
+
+	// client
 	retryTopic    string
+	client        client.Consumer
+	retryProducer Producer[Retry[T]]
+
+	//handler
+	handler []func(context.Context, T) error
+
+	// misc
+	codec  codec.Codec[T]
+	logger Logger
 }
 
 type ConsumerOption[T any] func(*consumer[T])
 
 func NewConsumer[T any](client client.Consumer) Consumer[T] {
 	c := &consumer[T]{
-		wg:        sync.WaitGroup{},
-		client:    client,
-		codec:     codec.JSON[T](),
-		close:     make(chan struct{}),
-		items:     make(chan *consumerItem),
 		numWorker: 1,
-		logger:    NewSlogLogger(nil),
-		retry:     make(chan *Retry[T], retryQueueSize),
+		wg:        sync.WaitGroup{},
+		items:     make(chan *consumerItem),
+		retry:     make(chan Retry[T], retryQueueSize),
+		close:     make(chan struct{}),
+		running:   atomic.Bool{},
+
+		client: client,
+
+		logger: NewSlogLogger(nil),
+		codec:  codec.JSON[T](),
 	}
 	return c
 }
@@ -107,7 +119,7 @@ func (c *consumer[T]) handleItem(ctx context.Context, workerID int, data T) {
 				}
 				if c.retryProducer == nil {
 					c.wg.Add(1)
-					c.retry <- &retryItem
+					c.retry <- retryItem
 				} else {
 					if err := c.retryProducer.Produce(ctx, c.retryTopic, retryItem); err != nil {
 						c.logger.Error(ctx, "worker retry produce error", "worker_id", workerID, "error", err, "topic", c.retryTopic, "data", data)
@@ -119,7 +131,7 @@ func (c *consumer[T]) handleItem(ctx context.Context, workerID int, data T) {
 	}
 }
 
-func (c *consumer[T]) handleRetry(ctx context.Context, workerID int, retryItem *Retry[T]) {
+func (c *consumer[T]) handleRetry(ctx context.Context, workerID int, retryItem Retry[T]) {
 	defer c.wg.Done()
 	retryItem.RetryCount++
 	data := retryItem.Data
@@ -142,7 +154,7 @@ func (c *consumer[T]) handleRetry(ctx context.Context, workerID int, retryItem *
 			}
 			if c.retryProducer == nil {
 				c.wg.Add(1)
-				c.retry <- &nextRetryItem
+				c.retry <- nextRetryItem
 			} else {
 				if err := c.retryProducer.Produce(ctx, c.retryTopic, nextRetryItem); err != nil {
 					c.logger.Error(ctx, "worker retry produce error", "worker_id", workerID, "error", err, "topic", c.retryTopic, "data", data)
@@ -152,21 +164,31 @@ func (c *consumer[T]) handleRetry(ctx context.Context, workerID int, retryItem *
 	}
 }
 
-func (c *consumer[T]) Start(ctx context.Context) error {
-	go func() {
-		for {
-			topic, item, err := c.client.Next(ctx)
-			c.logger.Info(ctx, "consume message", "topic", topic, "item", string(item))
-			if err != nil {
-				continue
-			}
-			c.wg.Add(1)
-			c.items <- &consumerItem{
-				Topic: topic,
-				Data:  item,
-			}
+// startConsume starts consuming messages from the client and sends them to the items channel
+func (c *consumer[T]) startConsume(ctx context.Context) {
+	for {
+		// if worker stopped, stop consuming
+		if !c.running.Load() {
+			return
 		}
-	}()
+		topic, item, err := c.client.Next(ctx)
+		c.logger.Info(ctx, "consume message", "topic", topic, "item", string(item))
+		if err != nil {
+			continue
+		}
+		c.wg.Add(1)
+		c.items <- &consumerItem{
+			Topic: topic,
+			Data:  item,
+		}
+	}
+}
+
+func (c *consumer[T]) Start(ctx context.Context) error {
+	// start consuming process
+	go c.startConsume(ctx)
+
+	// init worker pool
 	for i := 0; i < c.numWorker; i++ {
 		workerID := i
 		go func() {
@@ -183,7 +205,7 @@ func (c *consumer[T]) Start(ctx context.Context) error {
 							continue
 						}
 						c.logger.Info(ctx, "worker retry", "worker_id", workerID, "data", data.Data, "max_retry", data.MaxRetry, "retry_count", data.RetryCount, "topic", topic)
-						c.handleRetry(ctx, workerID, &data)
+						c.handleRetry(ctx, workerID, data)
 						continue
 					}
 					data, err := c.codec.Decode(rawData)

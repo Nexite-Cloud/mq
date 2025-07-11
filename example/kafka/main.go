@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/twmb/franz-go/pkg/kgo"
 	"log/slog"
 	"math/rand"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/Nexite-Cloud/mq"
 	"github.com/Nexite-Cloud/mq/client"
