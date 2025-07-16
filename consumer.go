@@ -42,10 +42,8 @@ type consumer[T any] struct {
 	retryTopic  string
 
 	// misc
-	logger   Logger
-	codec    codec.Codec[T]
-	received atomic.Uint64
-	produced atomic.Uint64
+	logger Logger
+	codec  codec.Codec[T]
 }
 
 func NewConsumer[T any](consumerClient client.Consumer) Consumer[T] {
@@ -155,7 +153,6 @@ func (c *consumer[T]) Start(ctx context.Context) error {
 					return
 
 				case record := <-recordChan:
-					c.received.Add(1)
 					c.info(ctx, "received", "data", record)
 					c.wg.Add(1)
 					if record.Topic == c.retryTopic {
@@ -212,7 +209,6 @@ func (c *consumer[T]) handleRetry(ctx context.Context, workerIdx int, retryItem 
 			if err := c.retryClient.Produce(ctx, c.retryTopic, nextRetryItem); err != nil {
 				c.error(ctx, "worker retry produce error", "worker_id", workerIdx, "error", err, "topic", c.retryTopic, "data", data)
 			}
-			c.produced.Add(1)
 			return
 		}
 		// #TODO: retry channel
@@ -246,7 +242,6 @@ func (c *consumer[T]) handle(ctx context.Context, workerIdx int, data T) {
 				if err := c.retryClient.Produce(context.WithoutCancel(ctx), c.retryTopic, retryItem); err != nil {
 					c.error(ctx, "worker retry produce error", "worker_id", workerIdx, "error", err, "topic", c.retryTopic, "data", data)
 				}
-				c.produced.Add(1)
 				return
 			}
 			// #TODO: retry channel
