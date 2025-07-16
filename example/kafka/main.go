@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
-	"sync"
-	"time"
+	`os/signal`
+	`time`
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
@@ -18,11 +18,13 @@ import (
 )
 
 type Data struct {
-	Number int
+	Number int `json:"number"`
 }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
 	ctx := context.Background()
 	topic := fmt.Sprintf("rand-%v", rand.Int63())
 	retryTopic := fmt.Sprintf("retry-%s", topic)
@@ -42,43 +44,50 @@ func main() {
 		panic(err)
 	}
 	pub := mq.NewProducer(client.NewKafka(kafkaClient))
-	pub.SetLogger(mq.NewSlogLogger(nil))
+	pub.SetLogger(mq.NewSlogLogger(logger))
 
 	retryPub := mq.NewTypedProducer[mq.Retry[Data]](client.NewKafka(kafkaClient))
-	retryPub.SetLogger(mq.NewSlogLogger(nil))
+	retryPub.SetLogger(mq.NewSlogLogger(logger))
 
-	wg := sync.WaitGroup{}
-	con := mq.NewConsumer[Data](client.NewKafka(kafkaClient))
+	//wg := sync.WaitGroup{}
+	mqClient := client.NewKafka(kafkaClient)
+	con := mq.NewConsumer[Data](mqClient)
+	defer con.Close(ctx)
+
+	con.OnClose(func(ctx context.Context) {
+		slog.Info("close kafka client")
+		if err := mqClient.Close(); err != nil {
+			slog.Error("error closing kafka client", "error", err)
+		}
+	})
 	con.SetTotalWorker(10)
 	con.SetCodec(codec.JSON[Data]())
 	con.SetLogger(mq.NewSlogLogger(logger))
 	con.SetRetryProducer(retryPub, retryTopic)
-	con.AddHandler(func(data Data) error {
-		defer wg.Done()
-		fmt.Println("received:", data.Number)
+	con.SetHandler(func(ctx context.Context, data Data) error {
+		//defer wg.Done()
+		slog.Info("received", "data", data.Number)
+		time.Sleep(10 * time.Second)
 		if data.Number >= 0 {
 			return nil
 		}
-		time.Sleep(3 * time.Second)
 		return mq.ErrorRetry(errors.New("negative number"), 3)
 
 	})
 	if err := con.Start(ctx); err != nil {
 		panic(err)
 	}
-	wg.Add(14)
 	if err := pub.Produce(ctx, topic, Data{Number: -11}); err != nil {
-		fmt.Println(err)
+		slog.Error(err.Error())
 	}
 	for i := 0; i < 10; i++ {
 		if err := pub.Produce(ctx, topic, Data{i}); err != nil {
-			fmt.Println(err)
+			slog.Error(err.Error())
 		}
 	}
-	go func() {
-		wg.Wait()
-		con.Close()
-	}()
+	slog.Info("produce done, waiting for consumer to process")
 
-	con.Wait()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, os.Kill)
+	<-sig
 }

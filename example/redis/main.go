@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
+	`os`
+	`os/signal`
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -28,24 +29,23 @@ func main() {
 	pro := mq.NewProducer(client.NewRedis(r))
 	retryPub := mq.NewTypedProducer[mq.Retry[Data]](client.NewRedis(r))
 	con := mq.NewConsumer[Data](client.NewRedis(r).ConsumeChannel(ctx, topic).ConsumeChannel(ctx, retryTopic))
-	var wg sync.WaitGroup
+	defer con.Close(ctx)
 	con.SetRetryProducer(retryPub, retryTopic)
 	con.SetTotalWorker(10)
+	con.SetLogger(mq.NewSlogLogger(nil))
 
-	con.AddHandler(func(data Data) error {
-		defer wg.Done()
+	con.SetHandler(func(ctx context.Context, data Data) error {
 		fmt.Println("received:", data.Number)
 		if data.Number >= 0 {
 			return nil
 		}
-		time.Sleep(3 * time.Second)
+		time.Sleep(10 * time.Second)
 		return mq.ErrorRetry(errors.New("negative number"), 3)
 
 	})
 	if err := con.Start(ctx); err != nil {
 		panic(err)
 	}
-	wg.Add(14)
 	if err := pro.Produce(ctx, topic, Data{Number: -11}); err != nil {
 		fmt.Println(err)
 	}
@@ -54,11 +54,8 @@ func main() {
 			fmt.Println(err)
 		}
 	}
-	go func() {
-		wg.Wait()
-		con.Close()
-	}()
 
-	con.Wait()
-
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, os.Kill)
+	<-sig
 }

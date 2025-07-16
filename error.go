@@ -2,12 +2,6 @@ package mq
 
 import "fmt"
 
-type Retry[T any] struct {
-	Data       T
-	MaxRetry   int
-	RetryCount int
-}
-
 type errTypeRetry struct {
 	base      error
 	retryTime int

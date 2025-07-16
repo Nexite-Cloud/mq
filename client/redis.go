@@ -12,13 +12,13 @@ type Redis struct {
 	client *redis.Client
 	sub    map[string]*redis.PubSub
 	close  map[string]chan struct{}
-	c      chan *redis.Message
+	c      chan *Record
 }
 
 func NewRedis(client *redis.Client) *Redis {
 	return &Redis{
 		client: client,
-		c:      make(chan *redis.Message),
+		c:      make(chan *Record),
 		sub:    make(map[string]*redis.PubSub),
 		close:  make(map[string]chan struct{}),
 	}
@@ -42,16 +42,23 @@ func (r *Redis) ConsumeChannel(ctx context.Context, channel string) *Redis {
 				if !ok {
 					return
 				}
-				r.c <- msg
+				r.c <- &Record{
+					Topic: msg.Channel,
+					Value: []byte(msg.Payload),
+				}
 			}
 		}
 	}()
 	return r
 }
 
-func (r *Redis) Next(ctx context.Context) (string, []byte, error) {
+func (r *Redis) Next(ctx context.Context) (*Record, error) {
 	msg := <-r.c
-	return msg.Channel, []byte(msg.Payload), nil
+	return msg, nil
+}
+
+func (r *Redis) Chan(ctx context.Context) <-chan *Record {
+	return r.c
 }
 
 func (r *Redis) Close() error {

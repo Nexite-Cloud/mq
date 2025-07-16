@@ -11,7 +11,7 @@ type Kafka struct {
 	once   sync.Once
 	client *kgo.Client
 	iter   *kgo.FetchesRecordIter
-	data   chan *kgo.Record
+	data   chan *Record
 }
 
 func (k *Kafka) Produce(ctx context.Context, topic string, data []byte) error {
@@ -32,29 +32,42 @@ func (k *Kafka) start(ctx context.Context) func() {
 	return func() {
 		go func() {
 			for {
-				fetches := k.client.PollFetches(ctx)
-				if err := fetches.Err(); err != nil {
-					panic(err)
-				}
-				k.iter = fetches.RecordIter()
-				for !k.iter.Done() {
-					record := k.iter.Next()
-					k.data <- record
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					fetches := k.client.PollFetches(ctx)
+					if err := fetches.Err(); err != nil {
+						continue
+					}
+					k.iter = fetches.RecordIter()
+					for !k.iter.Done() {
+						record := k.iter.Next()
+						k.data <- &Record{
+							Topic: record.Topic,
+							Value: record.Value,
+						}
+					}
 				}
 			}
 		}()
 	}
 }
 
-func (k *Kafka) Next(ctx context.Context) (string, []byte, error) {
+func (k *Kafka) Next(ctx context.Context) (*Record, error) {
 	k.once.Do(k.start(ctx))
 	record := <-k.data
-	return record.Topic, record.Value, nil
+	return record, nil
+}
+
+func (k *Kafka) Chan(ctx context.Context) <-chan *Record {
+	k.once.Do(k.start(ctx))
+	return k.data
 }
 
 func NewKafka(client *kgo.Client) *Kafka {
 	return &Kafka{
 		client: client,
-		data:   make(chan *kgo.Record),
+		data:   make(chan *Record),
 	}
 }
