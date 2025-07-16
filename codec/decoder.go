@@ -2,9 +2,9 @@ package codec
 
 import (
 	"bytes"
+	"encoding/gob"
 	"encoding/json"
 )
-import "encoding/gob"
 
 type Decoder[T any] func(data []byte) (T, error)
 
