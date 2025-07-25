@@ -2,62 +2,63 @@ package client
 
 import (
 	"context"
-	"github.com/redis/go-redis/v9"
 	"sync"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type Redis struct {
-	mu     sync.RWMutex
+	mu     sync.Mutex
 	client *redis.Client
-	sub    map[string]*redis.PubSub
-	close  map[string]chan struct{}
-	c      chan *redis.Message
+	sub    map[string]bool
+	c      chan *Record
 }
 
 func NewRedis(client *redis.Client) *Redis {
 	return &Redis{
 		client: client,
-		c:      make(chan *redis.Message),
-		sub:    make(map[string]*redis.PubSub),
-		close:  make(map[string]chan struct{}),
+		c:      make(chan *Record),
+		sub:    make(map[string]bool),
 	}
 }
 
 func (r *Redis) ConsumeChannel(ctx context.Context, channel string) *Redis {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.sub[channel] != nil {
+	if r.sub[channel] {
 		return r
 	}
 	sub := r.client.Subscribe(ctx, channel)
-	r.sub[channel] = sub
-	r.close[channel] = make(chan struct{}, 1)
+	r.sub[channel] = true
 	go func() {
 		for {
 			select {
-			case <-r.close[channel]:
+			case <-ctx.Done():
 				return
 			case msg, ok := <-sub.Channel():
 				if !ok {
 					return
 				}
-				r.c <- msg
+				r.c <- &Record{
+					Topic: msg.Channel,
+					Value: []byte(msg.Payload),
+				}
 			}
 		}
 	}()
 	return r
 }
 
-func (r *Redis) Next(ctx context.Context) (string, []byte, error) {
+func (r *Redis) Next(ctx context.Context) (*Record, error) {
 	msg := <-r.c
-	return msg.Channel, []byte(msg.Payload), nil
+	return msg, nil
+}
+
+func (r *Redis) Chan(ctx context.Context) <-chan *Record {
+	return r.c
 }
 
 func (r *Redis) Close() error {
-	for k, v := range r.sub {
-		v.Close()
-		r.close[k] <- struct{}{}
-	}
 	return nil
 }
 

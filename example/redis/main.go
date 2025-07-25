@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/redis/go-redis/v9"
-	"sync"
+	"log/slog"
+	"math/rand"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Nexite-Cloud/mq"
 	"github.com/Nexite-Cloud/mq/client"
@@ -18,7 +23,7 @@ type Data struct {
 
 func main() {
 	ctx := context.Background()
-	topic := "abc"
+	topic := fmt.Sprintf("rand-%v", rand.Int63())
 	retryTopic := fmt.Sprintf("retry-%s", topic)
 	r := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
@@ -27,24 +32,25 @@ func main() {
 	pro := mq.NewProducer(client.NewRedis(r))
 	retryPub := mq.NewTypedProducer[mq.Retry[Data]](client.NewRedis(r))
 	con := mq.NewConsumer[Data](client.NewRedis(r).ConsumeChannel(ctx, topic).ConsumeChannel(ctx, retryTopic))
-	var wg sync.WaitGroup
+	defer con.Close(ctx)
 	con.SetRetryProducer(retryPub, retryTopic)
 	con.SetTotalWorker(10)
+	con.SetLogger(mq.NewSlogLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))))
 
-	con.AddHandler(func(data Data) error {
-		defer wg.Done()
-		fmt.Println("received:", data.Number)
+	con.SetHandler(func(ctx context.Context, data Data) error {
+		slog.Info("process", "number", data.Number)
 		if data.Number >= 0 {
 			return nil
 		}
-		time.Sleep(3 * time.Second)
+		time.Sleep(2 * time.Second)
 		return mq.ErrorRetry(errors.New("negative number"), 3)
-
+	})
+	con.OnError(func(ctx context.Context, data Data, err error) {
+		slog.Error("error processing", "number", data.Number, "error", err)
 	})
 	if err := con.Start(ctx); err != nil {
 		panic(err)
 	}
-	wg.Add(14)
 	if err := pro.Produce(ctx, topic, Data{Number: -11}); err != nil {
 		fmt.Println(err)
 	}
@@ -53,11 +59,8 @@ func main() {
 			fmt.Println(err)
 		}
 	}
-	go func() {
-		wg.Wait()
-		con.Close()
-	}()
 
-	con.Wait()
-
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
 }

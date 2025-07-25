@@ -16,22 +16,22 @@ if err := p.Produce(ctx, "topic", data); err != nil {
 ### Consumer
 ```go
 c := mq.NewConsumer[T]({{kafka/redis client}})
-c.AddHandler(func(data T) error {
+defer c.Close(ctx)
+c.SetHandler(func(ctx, context.Context,data T) error {
     // handle data
     return nil
 })
 if err := c.Start(ctx); err != nil {
     panic(err)
 }
-c.Wait()
 ```
 - To set decoder, you can use `c.SetDecoder(decoder)` before calling `Start`. The decoder should implement the `codec.Decoder` interface. The default decoder is `codec.JSONDecoder`.
 - To set total number of workers, you can use `c.SetTotalWorkers(n)` before calling `Start`. The default number of workers is 1.
 - To set logger, you can use `c.SetLogger(logger)` before calling `Start`. The logger should implement the `mq.Logger` interface. The default logger is `mq.NewSlogLogger(slog.Default())`.
-- Default behavior is to consume all messages in the topic. If error occurs, the message will be skipped to next handler, to skip the message, you can return `mq.ErrorDrop(err)`.
+- Default behavior is to consume all messages in the topic. If error occurs, the message will be skipped, alternative you can return `mq.ErrorDrop(err)`.
 - To retry the message, return `mq.ErrorRetry(err, retryCount)`, where `retryCount` is the number of times to retry the message (exclude first time the message was read). 
 
 ## TODO
 - [ ] Add more methods to retry/drop messages
 - [ ] Support more clients (e.g. RabbitMQ, Cloudflare)
-- [ ] Graceful shutdown
+- [x] Graceful shutdown (message processing should be done before closing the consumer)
