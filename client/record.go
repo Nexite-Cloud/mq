@@ -1,6 +1,7 @@
 package client
 
 type Record struct {
-	Topic string
-	Value []byte
+	Partition int
+	Topic     string
+	Value     []byte
 }

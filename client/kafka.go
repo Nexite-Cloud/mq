@@ -7,11 +7,20 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
+const defaultMaxPollSize = 1000
+
+type KafkaOptions func(k *Kafka)
+
+var MaxPoolSize KafkaOptions = func(k *Kafka) {
+	k.maxPollSize = defaultMaxPollSize
+}
+
 type Kafka struct {
-	once   sync.Once
-	client *kgo.Client
-	iter   *kgo.FetchesRecordIter
-	data   chan *Record
+	once        sync.Once
+	client      *kgo.Client
+	iter        *kgo.FetchesRecordIter
+	data        chan *Record
+	maxPollSize int
 }
 
 func (k *Kafka) Produce(ctx context.Context, topic string, data []byte) error {
@@ -36,7 +45,7 @@ func (k *Kafka) start(ctx context.Context) func() {
 				case <-ctx.Done():
 					return
 				default:
-					fetches := k.client.PollFetches(ctx)
+					fetches := k.client.PollRecords(ctx, k.maxPollSize)
 					if err := fetches.Err(); err != nil {
 						continue
 					}
@@ -44,8 +53,9 @@ func (k *Kafka) start(ctx context.Context) func() {
 					for !k.iter.Done() {
 						record := k.iter.Next()
 						k.data <- &Record{
-							Topic: record.Topic,
-							Value: record.Value,
+							Partition: int(record.Partition),
+							Topic:     record.Topic,
+							Value:     record.Value,
 						}
 					}
 				}
@@ -65,9 +75,15 @@ func (k *Kafka) Chan(ctx context.Context) <-chan *Record {
 	return k.data
 }
 
-func NewKafka(client *kgo.Client) *Kafka {
-	return &Kafka{
-		client: client,
-		data:   make(chan *Record),
+func NewKafka(client *kgo.Client, opts ...KafkaOptions) *Kafka {
+	k := &Kafka{
+		client:      client,
+		data:        make(chan *Record),
+		maxPollSize: defaultMaxPollSize,
 	}
+	for _, opt := range opts {
+		opt(k)
+	}
+
+	return k
 }

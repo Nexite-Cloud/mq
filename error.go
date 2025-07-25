@@ -8,7 +8,7 @@ type errTypeRetry struct {
 }
 
 func (e *errTypeRetry) Error() string {
-	return fmt.Sprintf("retry, base error:\"%v\", max retry: %v", e.base, e.retryTime)
+	return e.base.Error()
 }
 
 func ErrorRetry(err error, retryLeft int) error {

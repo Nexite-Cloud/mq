@@ -7,8 +7,9 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
-	`os/signal`
-	`time`
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
@@ -35,6 +36,7 @@ func main() {
 		kgo.AllowAutoTopicCreation(),
 		kgo.ConsumerGroup(group),
 		kgo.ConsumeTopics(topic, retryTopic),
+		kgo.AutoCommitMarks(),
 	)
 	if err != nil {
 		panic(err)
@@ -49,7 +51,6 @@ func main() {
 	retryPub := mq.NewTypedProducer[mq.Retry[Data]](client.NewKafka(kafkaClient))
 	retryPub.SetLogger(mq.NewSlogLogger(logger))
 
-	//wg := sync.WaitGroup{}
 	mqClient := client.NewKafka(kafkaClient)
 	con := mq.NewConsumer[Data](mqClient)
 	defer con.Close(ctx)
@@ -65,14 +66,16 @@ func main() {
 	con.SetLogger(mq.NewSlogLogger(logger))
 	con.SetRetryProducer(retryPub, retryTopic)
 	con.SetHandler(func(ctx context.Context, data Data) error {
-		//defer wg.Done()
 		slog.Info("received", "data", data.Number)
-		time.Sleep(10 * time.Second)
 		if data.Number >= 0 {
 			return nil
 		}
+		time.Sleep(2 * time.Second)
 		return mq.ErrorRetry(errors.New("negative number"), 3)
 
+	})
+	con.OnError(func(ctx context.Context, data Data, err error) {
+		slog.Error("error processing data", "data", data.Number, "error", err)
 	})
 	if err := con.Start(ctx); err != nil {
 		panic(err)
@@ -88,6 +91,6 @@ func main() {
 	slog.Info("produce done, waiting for consumer to process")
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, os.Kill)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 }

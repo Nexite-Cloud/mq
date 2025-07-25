@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	`os`
-	`os/signal`
+	"log/slog"
+	"math/rand"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,7 +23,7 @@ type Data struct {
 
 func main() {
 	ctx := context.Background()
-	topic := "abc"
+	topic := fmt.Sprintf("rand-%v", rand.Int63())
 	retryTopic := fmt.Sprintf("retry-%s", topic)
 	r := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
@@ -32,16 +35,18 @@ func main() {
 	defer con.Close(ctx)
 	con.SetRetryProducer(retryPub, retryTopic)
 	con.SetTotalWorker(10)
-	con.SetLogger(mq.NewSlogLogger(nil))
+	con.SetLogger(mq.NewSlogLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))))
 
 	con.SetHandler(func(ctx context.Context, data Data) error {
-		fmt.Println("received:", data.Number)
+		slog.Info("process", "number", data.Number)
 		if data.Number >= 0 {
 			return nil
 		}
-		time.Sleep(10 * time.Second)
+		time.Sleep(2 * time.Second)
 		return mq.ErrorRetry(errors.New("negative number"), 3)
-
+	})
+	con.OnError(func(ctx context.Context, data Data, err error) {
+		slog.Error("error processing", "number", data.Number, "error", err)
 	})
 	if err := con.Start(ctx); err != nil {
 		panic(err)
@@ -56,6 +61,6 @@ func main() {
 	}
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, os.Kill)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 }

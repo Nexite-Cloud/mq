@@ -8,10 +8,9 @@ import (
 )
 
 type Redis struct {
-	mu     sync.RWMutex
+	mu     sync.Mutex
 	client *redis.Client
-	sub    map[string]*redis.PubSub
-	close  map[string]chan struct{}
+	sub    map[string]bool
 	c      chan *Record
 }
 
@@ -19,24 +18,22 @@ func NewRedis(client *redis.Client) *Redis {
 	return &Redis{
 		client: client,
 		c:      make(chan *Record),
-		sub:    make(map[string]*redis.PubSub),
-		close:  make(map[string]chan struct{}),
+		sub:    make(map[string]bool),
 	}
 }
 
 func (r *Redis) ConsumeChannel(ctx context.Context, channel string) *Redis {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.sub[channel] != nil {
+	if r.sub[channel] {
 		return r
 	}
 	sub := r.client.Subscribe(ctx, channel)
-	r.sub[channel] = sub
-	r.close[channel] = make(chan struct{}, 1)
+	r.sub[channel] = true
 	go func() {
 		for {
 			select {
-			case <-r.close[channel]:
+			case <-ctx.Done():
 				return
 			case msg, ok := <-sub.Channel():
 				if !ok {
@@ -62,10 +59,6 @@ func (r *Redis) Chan(ctx context.Context) <-chan *Record {
 }
 
 func (r *Redis) Close() error {
-	for k, v := range r.sub {
-		v.Close()
-		r.close[k] <- struct{}{}
-	}
 	return nil
 }
 
