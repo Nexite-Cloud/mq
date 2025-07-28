@@ -2,19 +2,13 @@ package mq
 
 import "fmt"
 
-type Retry[T any] struct {
-	Data       T
-	MaxRetry   int
-	RetryCount int
-}
-
 type errTypeRetry struct {
 	base      error
 	retryTime int
 }
 
 func (e *errTypeRetry) Error() string {
-	return fmt.Sprintf("retry, base error:\"%v\", max retry: %v", e.base, e.retryTime)
+	return e.base.Error()
 }
 
 func ErrorRetry(err error, retryLeft int) error {

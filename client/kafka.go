@@ -2,15 +2,25 @@ package client
 
 import (
 	"context"
-	"github.com/twmb/franz-go/pkg/kgo"
 	"sync"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
+const defaultMaxPollSize = 1000
+
+type KafkaOptions func(k *Kafka)
+
+var MaxPoolSize KafkaOptions = func(k *Kafka) {
+	k.maxPollSize = defaultMaxPollSize
+}
+
 type Kafka struct {
-	once   sync.Once
-	client *kgo.Client
-	iter   *kgo.FetchesRecordIter
-	data   chan *kgo.Record
+	once        sync.Once
+	client      *kgo.Client
+	iter        *kgo.FetchesRecordIter
+	data        chan *Record
+	maxPollSize int
 }
 
 func (k *Kafka) Produce(ctx context.Context, topic string, data []byte) error {
@@ -31,29 +41,49 @@ func (k *Kafka) start(ctx context.Context) func() {
 	return func() {
 		go func() {
 			for {
-				fetches := k.client.PollFetches(ctx)
-				if err := fetches.Err(); err != nil {
-					panic(err)
-				}
-				k.iter = fetches.RecordIter()
-				for !k.iter.Done() {
-					record := k.iter.Next()
-					k.data <- record
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					fetches := k.client.PollRecords(ctx, k.maxPollSize)
+					if err := fetches.Err(); err != nil {
+						continue
+					}
+					k.iter = fetches.RecordIter()
+					for !k.iter.Done() {
+						record := k.iter.Next()
+						k.data <- &Record{
+							Partition: int(record.Partition),
+							Topic:     record.Topic,
+							Value:     record.Value,
+						}
+					}
 				}
 			}
 		}()
 	}
 }
 
-func (k *Kafka) Next(ctx context.Context) (string, []byte, error) {
+func (k *Kafka) Next(ctx context.Context) (*Record, error) {
 	k.once.Do(k.start(ctx))
 	record := <-k.data
-	return record.Topic, record.Value, nil
+	return record, nil
 }
 
-func NewKafka(client *kgo.Client) *Kafka {
-	return &Kafka{
-		client: client,
-		data:   make(chan *kgo.Record),
+func (k *Kafka) Chan(ctx context.Context) <-chan *Record {
+	k.once.Do(k.start(ctx))
+	return k.data
+}
+
+func NewKafka(client *kgo.Client, opts ...KafkaOptions) *Kafka {
+	k := &Kafka{
+		client:      client,
+		data:        make(chan *Record),
+		maxPollSize: defaultMaxPollSize,
 	}
+	for _, opt := range opts {
+		opt(k)
+	}
+
+	return k
 }
