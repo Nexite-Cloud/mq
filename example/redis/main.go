@@ -7,8 +7,6 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -59,8 +57,5 @@ func main() {
 			fmt.Println(err)
 		}
 	}
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	con.Wait(context.Background())
 }

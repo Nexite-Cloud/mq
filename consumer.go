@@ -14,7 +14,7 @@ import (
 
 type Consumer[T any] interface {
 	Start(ctx context.Context) error
-	Wait()
+	Wait(ctx context.Context)
 	SetHandler(handler func(context.Context, T) error)
 	SetCodec(codec codec.Codec[T])
 	SetTotalWorker(num int)
@@ -117,9 +117,10 @@ func (c *consumer[T]) Resize(ctx context.Context, totalWorker int) {
 }
 
 // Wait blocks until all workers have finished processing messages.
-func (c *consumer[T]) Wait() {
-	c.wg.Wait()
-	c.workerWg.Wait()
+func (c *consumer[T]) Wait(ctx context.Context) {
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	<-ctx.Done()
 }
 
 // SetHandler sets the handler function that will be called for each message.
@@ -162,7 +163,8 @@ func (c *consumer[T]) SetRetryProducer(producer Producer[Retry[T]], topic string
 
 func (c *consumer[T]) Close(ctx context.Context) {
 	c.info(ctx, "waiting for workers to finish")
-	c.Wait()
+	c.wg.Wait()
+	c.workerWg.Wait()
 	c.info(ctx, "trigger close hooks")
 	for _, fn := range c.closeHooks {
 		fn(ctx)

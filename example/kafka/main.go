@@ -7,8 +7,6 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -89,8 +87,5 @@ func main() {
 		}
 	}
 	slog.Info("produce done, waiting for consumer to process")
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	con.Wait(context.Background())
 }
