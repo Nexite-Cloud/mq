@@ -9,12 +9,12 @@ import (
 
 type Redis struct {
 	mu     sync.Mutex
-	client *redis.Client
+	client redis.UniversalClient
 	sub    map[string]bool
 	c      chan *Record
 }
 
-func NewRedis(client *redis.Client) *Redis {
+func NewRedis(client redis.UniversalClient) *Redis {
 	return &Redis{
 		client: client,
 		c:      make(chan *Record),
