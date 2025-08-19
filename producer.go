@@ -41,24 +41,22 @@ type Producer[T any] interface {
 	Codec() codec.Codec[T]
 }
 type producer[T any] struct {
-	client client.Producer
-	codec  codec.Codec[T]
-	logger Logger
+	defaultOpt []ProducerOption
+	client     client.Producer
+	codec      codec.Codec[T]
+	logger     Logger
 }
 
-func NewProducer(client client.Producer) Producer[any] {
-	return &producer[any]{
-		client: client,
-		codec:  codec.JSON[any](),
-		logger: NewSlogLogger(nil),
-	}
+func NewProducer(client client.Producer, defaultOpt ...ProducerOption) Producer[any] {
+	return NewTypedProducer[any](client, defaultOpt...)
 }
 
-func NewTypedProducer[T any](client client.Producer) Producer[T] {
+func NewTypedProducer[T any](client client.Producer, defaultOpt ...ProducerOption) Producer[T] {
 	return &producer[T]{
-		client: client,
-		codec:  codec.JSON[T](),
-		logger: NewSlogLogger(nil),
+		defaultOpt: defaultOpt,
+		client:     client,
+		codec:      codec.JSON[T](),
+		logger:     NewSlogLogger(nil),
 	}
 }
 
@@ -72,6 +70,9 @@ func (p *producer[T]) SetCodec(codec codec.Codec[T]) {
 
 func (p *producer[T]) Produce(ctx context.Context, topic string, data T, opt ...ProducerOption) error {
 	op := defaultProduceOpt()
+	for _, o := range p.defaultOpt {
+		o(op)
+	}
 	for _, o := range opt {
 		o(op)
 	}
@@ -87,11 +88,13 @@ func (p *producer[T]) Produce(ctx context.Context, topic string, data T, opt ...
 	var lastErr error
 	for i := range op.MaxRetryCount {
 		lastErr = nil
-		p.logger.Info(ctx, "produce message", "topic", topic, "data", data, "attempt", i, "msg", string(msg))
+		p.logger.Info(ctx, "produce message", "topic", topic, "data", data, "attempt", i+1, "msg", string(msg))
 		if err := p.client.Produce(ctx, topic, msg); err != nil {
 			lastErr = err
-			p.logger.Error(ctx, "error producing message", "topic", topic, "data", data, "attempt", i, "error", err)
+			p.logger.Error(ctx, "error producing message", "topic", topic, "data", data, "attempt", i+1, "error", err)
+			continue
 		}
+		break
 	}
 	return lastErr
 }
