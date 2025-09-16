@@ -46,7 +46,7 @@ func main() {
 	pub := mq.NewProducer(client.NewKafka(kafkaClient))
 	pub.SetLogger(mq.NewSlogLogger(logger))
 
-	retryPub := mq.NewTypedProducer[mq.Retry[Data]](client.NewKafka(kafkaClient))
+	retryPub := mq.NewTypedProducer[mq.Retry[Data]](client.NewKafka(kafkaClient), mq.ProduceTimeout(time.Minute), mq.ProduceMaxRetry(10))
 	retryPub.SetLogger(mq.NewSlogLogger(logger))
 
 	mqClient := client.NewKafka(kafkaClient)
@@ -78,7 +78,7 @@ func main() {
 	if err := con.Start(ctx); err != nil {
 		panic(err)
 	}
-	if err := pub.Produce(ctx, topic, Data{Number: -11}); err != nil {
+	if err := pub.Produce(ctx, topic, Data{Number: -11}, mq.ProduceTimeout(time.Minute), mq.ProduceMaxRetry(5)); err != nil {
 		slog.Error(err.Error())
 	}
 	for i := 0; i < 10; i++ {
