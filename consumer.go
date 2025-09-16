@@ -104,6 +104,7 @@ func (c *consumer[T]) Resize(ctx context.Context, totalWorker int) {
 	// scale up
 	if totalWorker > c.totalWorker {
 		for i := 0; i < totalWorker-c.totalWorker; i++ {
+			c.workerWg.Add(1)
 			go c.startWorker(ctx)
 		}
 		c.totalWorker = totalWorker
@@ -185,7 +186,6 @@ func (c *consumer[T]) OnClose(fn func(ctx context.Context)) {
 func (c *consumer[T]) startWorker(ctx context.Context) {
 	idx := c.getWorkerIdx()
 	c.info(ctx, "starting worker", "idx", idx)
-	c.workerWg.Add(1)
 	defer func() {
 		c.info(ctx, "worker stopped", "worker_idx", idx)
 		c.workerWg.Done()
@@ -234,6 +234,7 @@ func (c *consumer[T]) Start(ctx context.Context) error {
 
 	// async -> handle message
 	for range c.totalWorker {
+		c.workerWg.Add(1)
 		go c.startWorker(ctx)
 	}
 
